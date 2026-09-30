@@ -1,0 +1,616 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>TCP Segments and Ports</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@100,400;100,500;100,600;100,700;110,700&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<style>
+/* Layout: one wide stage (client | wire | server) on top, then three working panels:
+   narration + controls, the 32-bit header, and the receive buffer + log. */
+:root {
+  --bg: #edf0f4;
+  --surface: #ffffff;
+  --surface-2: #f5f7fa;
+  --fg: #17212b;
+  --muted: #5f6d7b;
+  --line: #cbd4de;
+  --line-strong: #93a1b1;
+  --client: #d4531a;
+  --client-soft: #fbe6da;
+  --server: #0d7a8a;
+  --server-soft: #d6eef1;
+  --loss: #b3261e;
+  --ok: #2c7a3d;
+  --focus: #2b62d9;
+  --display: "Archivo", "Helvetica Neue", Arial, sans-serif;
+  --mono: "IBM Plex Mono", "SFMono-Regular", Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0f151c; --surface: #171f28; --surface-2: #1e2731; --fg: #e6ebf0; --muted: #96a4b4;
+    --line: #2c3743; --line-strong: #4b5a6b; --client: #ff8a4c; --client-soft: #3a2418;
+    --server: #40c6d8; --server-soft: #123238; --loss: #ff7068; --ok: #6cc781; --focus: #7ea6ff;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0f151c; --surface: #171f28; --surface-2: #1e2731; --fg: #e6ebf0; --muted: #96a4b4;
+  --line: #2c3743; --line-strong: #4b5a6b; --client: #ff8a4c; --client-soft: #3a2418;
+  --server: #40c6d8; --server-soft: #123238; --loss: #ff7068; --ok: #6cc781; --focus: #7ea6ff;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--bg); color: var(--fg);
+  font-family: var(--display); font-size: 15px; line-height: 1.5;
+  font-variation-settings: "wdth" 100;
+}
+.wrap { max-width: 1120px; margin: 0 auto; padding-inline: 16px; padding-block: 28px 48px; }
+h1, h2, h3 { margin: 0; text-wrap: balance; }
+h1 { font-size: clamp(28px, 4vw, 40px); font-weight: 700; letter-spacing: -0.01em; line-height: 1.1; }
+.lede { max-width: 62ch; color: var(--muted); margin: 10px 0 0; font-size: 16px; }
+.eyebrow { font-size: 12px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted); font-weight: 600; }
+.concepts { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-top: 22px; }
+.concept { background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 12px 14px; min-width: 0; }
+.concept b { display: block; font-size: 14px; margin-bottom: 2px; }
+.concept span { font-size: 13.5px; color: var(--muted); }
+.concept code { font-family: var(--mono); font-size: 12.5px; color: var(--fg); }
+@media (max-width: 720px) { .concepts { grid-template-columns: 1fr; } }
+
+/* Stage */
+.stage { margin-top: 24px; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; overflow-x: auto; }
+.stage svg { display: block; width: 100%; min-width: 720px; height: auto; font-family: var(--display); }
+.stage .host-box { fill: var(--surface-2); stroke: var(--line-strong); stroke-width: 1.2; }
+.stage .host-name { font-size: 19px; font-weight: 700; fill: var(--fg); }
+.stage .ip { font-family: var(--mono); font-size: 13px; fill: var(--muted); }
+.stage .lbl { font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase; fill: var(--muted); font-weight: 600; }
+.stage .mono { font-family: var(--mono); font-size: 13px; fill: var(--fg); }
+.stage .mono.dim { fill: var(--muted); }
+.stage .state-badge rect { fill: var(--surface); stroke: var(--line-strong); }
+.stage .state-badge text { font-family: var(--mono); font-size: 12.5px; font-weight: 600; fill: var(--fg); }
+.stage .state-badge.est rect { fill: var(--ok); stroke: var(--ok); }
+.stage .state-badge.est text { fill: #fff; }
+.stage .sock rect { fill: var(--surface); stroke: var(--line); }
+.stage .sock text { font-size: 13px; fill: var(--muted); }
+.stage .sock .port { font-family: var(--mono); font-weight: 600; fill: var(--fg); }
+.stage .sock.active rect { stroke-width: 2; }
+.stage .sock.active.c rect { stroke: var(--client); fill: var(--client-soft); }
+.stage .sock.active.s rect { stroke: var(--server); fill: var(--server-soft); }
+.stage .sock.hit rect { stroke-width: 3; }
+.stage .wire { stroke: var(--line-strong); stroke-width: 2; stroke-dasharray: 6 5; }
+.stage .wire-lbl { font-size: 12px; fill: var(--muted); letter-spacing: 0.08em; text-transform: uppercase; }
+.stage .tuple { font-family: var(--mono); font-size: 12.5px; fill: var(--muted); }
+.stage .pkt rect.body { stroke-width: 2; }
+.stage .pkt.c rect.body { fill: var(--client-soft); stroke: var(--client); }
+.stage .pkt.s rect.body { fill: var(--server-soft); stroke: var(--server); }
+.stage .pkt text { font-family: var(--mono); font-size: 12px; fill: var(--fg); }
+.stage .pkt text.flags { font-weight: 600; font-size: 13px; }
+.stage .pkt.c text.flags { fill: var(--client); }
+.stage .pkt.s text.flags { fill: var(--server); }
+.stage .pkt .tag { font-family: var(--display); font-size: 11px; font-weight: 700; letter-spacing: 0.08em; }
+.stage .pkt .tag.retx { fill: var(--ok); }
+.stage .pkt .tag.dup { fill: var(--loss); }
+.stage .drop { fill: none; stroke: var(--loss); stroke-width: 3; stroke-linecap: round; }
+.stage .drop-lbl { font-size: 12px; font-weight: 700; fill: var(--loss); letter-spacing: 0.08em; text-transform: uppercase; }
+.stage .arrow { fill: var(--line-strong); }
+.stage .dir { font-size: 11px; fill: var(--muted); }
+
+/* Panels */
+.panels { display: grid; grid-template-columns: 1.15fr 1fr 0.9fr; gap: 16px; margin-top: 16px; }
+@media (max-width: 960px) { .panels { grid-template-columns: 1fr 1fr; } .panel.log-panel { grid-column: 1 / -1; } }
+@media (max-width: 640px) { .panels { grid-template-columns: 1fr; } .panel.log-panel { grid-column: auto; } }
+.panel { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 16px; min-width: 0; }
+.panel h2 { font-size: 13px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted); font-weight: 600; }
+
+.step-head { display: flex; align-items: baseline; gap: 10px; margin-top: 10px; }
+.step-num { font-family: var(--mono); font-size: 12px; color: var(--muted); }
+.step-title { font-size: 20px; font-weight: 700; line-height: 1.2; }
+.step-text { margin: 8px 0 0; color: var(--fg); max-width: 60ch; }
+.step-text code { font-family: var(--mono); font-size: 13px; background: var(--surface-2); padding: 1px 5px; border-radius: 3px; }
+.phase-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
+.chip { border: 1px solid var(--line); background: var(--surface-2); color: var(--muted); border-radius: 999px; padding: 4px 11px; font: inherit; font-size: 12.5px; font-weight: 600; cursor: pointer; }
+.chip[aria-current="true"] { background: var(--fg); color: var(--bg); border-color: var(--fg); }
+.controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--line); }
+.btn { font: inherit; font-weight: 600; font-size: 14px; border: 1px solid var(--line-strong); background: var(--surface); color: var(--fg); border-radius: 6px; padding: 7px 13px; cursor: pointer; }
+.btn.primary { background: var(--fg); color: var(--bg); border-color: var(--fg); min-width: 84px; }
+.btn:disabled { opacity: 0.45; cursor: default; }
+.controls select { font: inherit; font-size: 14px; border: 1px solid var(--line-strong); background: var(--surface); color: var(--fg); border-radius: 6px; padding: 6px 8px; }
+.controls label { font-size: 13px; color: var(--muted); display: flex; align-items: center; gap: 6px; }
+.progress { height: 4px; background: var(--line); border-radius: 2px; margin-top: 12px; overflow: hidden; }
+.progress > div { height: 100%; width: 0; background: var(--fg); transition: width .3s; }
+button:focus-visible, select:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+
+/* Header diagram */
+.hdr-caption { font-size: 12.5px; color: var(--muted); margin-top: 8px; }
+.bits { display: grid; grid-template-columns: repeat(32, 1fr); margin-top: 10px; font-family: var(--mono); font-size: 10px; color: var(--muted); }
+.bits span { grid-column: span 8; }
+.bits span:last-child { text-align: right; }
+.hdr { border: 1px solid var(--line-strong); border-radius: 4px; overflow: hidden; margin-top: 2px; }
+.row { display: grid; grid-template-columns: repeat(32, minmax(0, 1fr)); border-top: 1px solid var(--line-strong); }
+.row:first-child { border-top: 0; }
+.f { padding: 6px 8px; border-left: 1px solid var(--line-strong); min-width: 0; background: var(--surface); }
+.f:first-child { border-left: 0; }
+.f span { display: block; font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.f b { display: block; font-family: var(--mono); font-weight: 600; font-size: 14px; margin-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.w4 { grid-column: span 4; } .w6 { grid-column: span 6; } .w16 { grid-column: span 16; } .w32 { grid-column: span 32; }
+.f.hot { background: var(--surface-2); }
+.f.from-c b { color: var(--client); } .f.from-s b { color: var(--server); }
+.flagbits { display: flex; flex-wrap: wrap; gap: 3px; margin-top: 3px; }
+.flagbits i { font-style: normal; font-family: var(--mono); font-size: 10px; font-weight: 600; padding: 1px 4px; border-radius: 3px; border: 1px solid var(--line); color: var(--muted); }
+.flagbits i.on { background: var(--fg); color: var(--bg); border-color: var(--fg); }
+.f.data b { white-space: normal; font-size: 12.5px; font-weight: 500; line-height: 1.4; }
+.hdr.idle .f b { color: var(--muted); }
+.ports-note { margin-top: 12px; font-size: 13px; color: var(--muted); }
+.ports-note table { border-collapse: collapse; width: 100%; margin-top: 6px; font-size: 12.5px; }
+.ports-note td { padding: 3px 0; border-top: 1px solid var(--line); }
+.ports-note td:first-child { font-family: var(--mono); color: var(--fg); font-weight: 600; white-space: nowrap; padding-right: 12px; }
+
+/* Buffer + log */
+.buf { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin-top: 10px; }
+.blk { border: 1.5px dashed var(--line-strong); border-radius: 4px; padding: 8px 6px; text-align: center; min-width: 0; }
+.blk b { display: block; font-family: var(--mono); font-size: 12px; font-weight: 600; }
+.blk span { display: block; font-size: 11px; color: var(--muted); margin-top: 2px; }
+.blk.buffered { border-style: dashed; border-color: var(--server); background: repeating-linear-gradient(135deg, var(--server-soft) 0 6px, var(--surface) 6px 12px); }
+.blk.done { border-style: solid; border-color: var(--server); background: var(--server-soft); }
+.buf-note { font-size: 12.5px; color: var(--muted); margin-top: 8px; min-height: 2.6em; }
+.log { list-style: none; margin: 10px 0 0; padding: 0; font-family: var(--mono); font-size: 12px; max-height: 250px; overflow-y: auto; border-top: 1px solid var(--line); }
+.log li { display: grid; grid-template-columns: 22px 1fr; gap: 6px; padding: 5px 0; border-bottom: 1px solid var(--line); color: var(--muted); }
+.log li .who { font-weight: 600; }
+.log li.c .who { color: var(--client); } .log li.s .who { color: var(--server); }
+.log li.now { color: var(--fg); background: var(--surface-2); }
+.log li .note { color: var(--loss); font-weight: 600; }
+.log li .note.ok { color: var(--ok); }
+.footnote { margin-top: 20px; font-size: 13px; color: var(--muted); max-width: 70ch; }
+
+@media (prefers-reduced-motion: reduce) { .progress > div { transition: none; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="eyebrow">Animated walkthrough</div>
+    <h1>How TCP moves bytes: segments, ports and sequence numbers</h1>
+    <p class="lede">A browser on one machine talks to a web server on another. Watch each segment cross the wire, read its header, and see how ports pick the program and sequence numbers keep the bytes in order.</p>
+    <div class="concepts">
+      <div class="concept"><b>Port number</b><span>Which program on the host. 16 bits, so <code>0–65535</code>. Servers listen on well-known ports (<code>80</code>, <code>443</code>, <code>22</code>); clients get a temporary one from <code>49152–65535</code>.</span></div>
+      <div class="concept"><b>Segment</b><span>One TCP unit: a 20-byte header plus a chunk of the byte stream, no bigger than the maximum segment size (MSS). Here MSS is <code>400</code> bytes.</span></div>
+      <div class="concept"><b>Sequence &amp; ack numbers</b><span><code>seq</code> is the stream position of the first payload byte. <code>ack</code> is the next byte the receiver expects, which acknowledges everything before it.</span></div>
+    </div>
+  </header>
+
+  <div class="stage" aria-label="Animation of TCP segments travelling between client and server">
+    <svg id="stage" viewBox="0 0 960 400" role="img" aria-labelledby="stage-title">
+      <title id="stage-title">Client and server connected by a wire; segments travel between them</title>
+      <defs>
+        <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" class="arrow"/></marker>
+      </defs>
+      <!-- Client -->
+      <g id="host-C" transform="translate(24,36)">
+        <rect class="host-box" x="0" y="0" width="222" height="330" rx="8"/>
+        <text class="host-name" x="16" y="32">Client</text>
+        <text class="ip" x="16" y="52">10.0.0.7</text>
+        <g class="state-badge" id="state-C" transform="translate(16,64)"><rect x="0" y="0" width="190" height="24" rx="4"/><text x="10" y="16">CLOSED</text></g>
+        <text class="lbl" x="16" y="116">Send next</text><text class="mono" id="snd-C" x="120" y="116">1000</text>
+        <text class="lbl" x="16" y="136">Receive next</text><text class="mono dim" id="rcv-C" x="120" y="136">—</text>
+        <text class="lbl" x="16" y="172">Open ports</text>
+        <g class="sock c" id="sock-C-0" transform="translate(16,182)"><rect x="0" y="0" width="190" height="26" rx="4"/><text x="10" y="17"><tspan class="port">51724</tspan>  browser tab</text></g>
+        <g class="sock c" id="sock-C-1" transform="translate(16,214)"><rect x="0" y="0" width="190" height="26" rx="4"/><text x="10" y="17"><tspan class="port">51725</tspan>  ssh client</text></g>
+        <g class="sock c" id="sock-C-2" transform="translate(16,246)"><rect x="0" y="0" width="190" height="26" rx="4"/><text x="10" y="17"><tspan class="port">51726</tspan>  mail app</text></g>
+        <text class="mono dim" x="16" y="302" font-size="11">ephemeral ports</text>
+        <text class="mono dim" x="16" y="318" font-size="11">chosen by the OS</text>
+      </g>
+      <!-- Server -->
+      <g id="host-S" transform="translate(714,36)">
+        <rect class="host-box" x="0" y="0" width="222" height="330" rx="8"/>
+        <text class="host-name" x="16" y="32">Server</text>
+        <text class="ip" x="16" y="52">203.0.113.5</text>
+        <g class="state-badge" id="state-S" transform="translate(16,64)"><rect x="0" y="0" width="190" height="24" rx="4"/><text x="10" y="16">LISTEN</text></g>
+        <text class="lbl" x="16" y="116">Send next</text><text class="mono" id="snd-S" x="120" y="116">5000</text>
+        <text class="lbl" x="16" y="136">Receive next</text><text class="mono dim" id="rcv-S" x="120" y="136">—</text>
+        <text class="lbl" x="16" y="172">Open ports</text>
+        <g class="sock s" id="sock-S-0" transform="translate(16,182)"><rect x="0" y="0" width="190" height="26" rx="4"/><text x="10" y="17"><tspan class="port">80</tspan>  web server (http)</text></g>
+        <g class="sock s" id="sock-S-1" transform="translate(16,214)"><rect x="0" y="0" width="190" height="26" rx="4"/><text x="10" y="17"><tspan class="port">22</tspan>  sshd</text></g>
+        <g class="sock s" id="sock-S-2" transform="translate(16,246)"><rect x="0" y="0" width="190" height="26" rx="4"/><text x="10" y="17"><tspan class="port">25</tspan>  smtp</text></g>
+        <text class="mono dim" x="16" y="302" font-size="11">well-known ports</text>
+        <text class="mono dim" x="16" y="318" font-size="11">fixed, published</text>
+      </g>
+      <!-- Wire -->
+      <line class="wire" x1="246" y1="231" x2="714" y2="231"/>
+      <text class="wire-lbl" x="480" y="346" text-anchor="middle">IP network · packets can be delayed, reordered or lost</text>
+      <text class="tuple" id="tuple" x="480" y="366" text-anchor="middle">10.0.0.7:51724  ⇄  203.0.113.5:80</text>
+      <g id="pkt-layer"></g>
+      <g id="drop-layer"></g>
+    </svg>
+  </div>
+
+  <div class="panels">
+    <section class="panel">
+      <h2>What is happening</h2>
+      <div class="step-head"><span class="step-num" id="step-num">Step 1 of 17</span></div>
+      <div class="step-title" id="step-title"></div>
+      <p class="step-text" id="step-text"></p>
+      <div class="phase-chips" id="phase-chips" role="group" aria-label="Jump to phase"></div>
+      <div class="controls">
+        <button class="btn" id="btn-prev" type="button" aria-label="Previous step">◀ Back</button>
+        <button class="btn primary" id="btn-play" type="button">Play</button>
+        <button class="btn" id="btn-next" type="button" aria-label="Next step">Next ▶</button>
+        <button class="btn" id="btn-restart" type="button">Restart</button>
+        <label for="speed">Speed <select id="speed"><option value="0.5">0.5×</option><option value="1" selected>1×</option><option value="2">2×</option></select></label>
+      </div>
+      <div class="progress" aria-hidden="true"><div id="progress-bar"></div></div>
+    </section>
+
+    <section class="panel">
+      <h2>Segment header</h2>
+      <div class="hdr-caption" id="hdr-caption">The 20-byte TCP header of the segment on the wire, 32 bits per row.</div>
+      <div class="bits" aria-hidden="true"><span>0</span><span>8</span><span>16</span><span>31</span></div>
+      <div class="hdr idle" id="hdr">
+        <div class="row"><div class="f w16" id="f-sp"><span>Source port</span><b id="h-sp">—</b></div><div class="f w16" id="f-dp"><span>Destination port</span><b id="h-dp">—</b></div></div>
+        <div class="row"><div class="f w32" id="f-seq"><span>Sequence number</span><b id="h-seq">—</b></div></div>
+        <div class="row"><div class="f w32" id="f-ack"><span>Acknowledgment number</span><b id="h-ack">—</b></div></div>
+        <div class="row"><div class="f w4"><span>Offset</span><b>5</b></div><div class="f w4"><span>Rsvd</span><b>0</b></div><div class="f w8" id="f-flags"><span>Flags</span><div class="flagbits" id="h-flags"><i>URG</i><i>ACK</i><i>PSH</i><i>RST</i><i>SYN</i><i>FIN</i></div></div><div class="f w16"><span>Window</span><b id="h-win">65535</b></div></div>
+        <div class="row"><div class="f w16"><span>Checksum</span><b id="h-sum">—</b></div><div class="f w16"><span>Urgent pointer</span><b>0</b></div></div>
+        <div class="row"><div class="f w32 data" id="f-data"><span>Payload</span><b id="h-data">—</b></div></div>
+      </div>
+      <div class="ports-note">
+        <div>Replies swap the two ports. The four numbers that name this connection:</div>
+        <table>
+          <tr><td>10.0.0.7 : 51724</td><td>client IP and ephemeral port</td></tr>
+          <tr><td>203.0.113.5 : 80</td><td>server IP and well-known port</td></tr>
+        </table>
+      </div>
+    </section>
+
+    <section class="panel log-panel">
+      <h2>Client receive buffer</h2>
+      <div class="hdr-caption">The 1200-byte response, bytes 5001–6200, arriving in three segments.</div>
+      <div class="buf" id="buf">
+        <div class="blk" id="blk-0"><b>5001–5400</b><span>waiting</span></div>
+        <div class="blk" id="blk-1"><b>5401–5800</b><span>waiting</span></div>
+        <div class="blk" id="blk-2"><b>5801–6200</b><span>waiting</span></div>
+      </div>
+      <div class="buf-note" id="buf-note">Nothing received yet.</div>
+      <h2 style="margin-top:14px">Segment log</h2>
+      <ol class="log" id="log"></ol>
+    </section>
+  </div>
+  <p class="footnote">Initial sequence numbers are shown as 1000 and 5000 to keep the arithmetic readable; real stacks pick random 32-bit values. Window and checksum values are illustrative. Addresses come from the ranges reserved for documentation.</p>
+</div>
+
+<script>
+(function () {
+  'use strict';
+  var C = { key: 'C', name: 'Client', ip: '10.0.0.7', port: 51724 };
+  var S = { key: 'S', name: 'Server', ip: '203.0.113.5', port: 80 };
+  var HOST = { C: C, S: S };
+
+  var PHASES = [
+    { name: 'Ports', at: 0 }, { name: 'Handshake', at: 1 }, { name: 'Data', at: 4 },
+    { name: 'Loss & retransmit', at: 8 }, { name: 'Close', at: 13 }
+  ];
+
+  var REQ = 'GET /index.html HTTP/1.1\\r\\nHost: example.com\\r\\n\\r\\n';
+
+  var STEPS = [
+    { title: 'A connection is four numbers',
+      text: 'The browser opened a socket and the operating system gave it an ephemeral port, <code>51724</code>. The web server has been listening on the well-known port <code>80</code> since it started. Those two ports plus the two IP addresses uniquely identify this connection. The ssh and mail programs on the same machines use other ports, so their traffic never gets mixed up with this one.',
+      before: {}, after: {}, hl: ['C-0', 'S-0'] },
+    { title: 'SYN: the client asks to open a connection',
+      text: 'The client sends a segment with only the <code>SYN</code> flag set and its initial sequence number, 1000. There is no payload. Because the destination port is <code>80</code>, the server’s OS hands the segment to the web server’s listening socket and not to sshd on 22 or smtp on 25.',
+      pkt: { from: 'C', flags: ['SYN'], seq: 1000, ack: null, len: 0 },
+      before: { C: { state: 'SYN-SENT' } }, after: { S: { state: 'SYN-RECEIVED', rcv: 1001 } }, demux: 'S-0' },
+    { title: 'SYN-ACK: the server agrees and starts its own numbering',
+      text: 'The server answers with <code>SYN</code> and <code>ACK</code> together. Its own initial sequence number is 5000, and <code>ack=1001</code> means: I have everything up to byte 1000, next I expect 1001. A SYN uses up one sequence number even though it carries no data. The ports are swapped, source 80 and destination 51724, which is how the client’s OS routes the reply to the browser and not to ssh.',
+      pkt: { from: 'S', flags: ['SYN', 'ACK'], seq: 5000, ack: 1001, len: 0 },
+      before: {}, after: { C: { state: 'ESTABLISHED', snd: 1001, rcv: 5001 } }, demux: 'C-0' },
+    { title: 'ACK: the handshake is complete',
+      text: 'The client acknowledges 5001. Both sides are now <code>ESTABLISHED</code> and agree on each other’s starting numbers. Three segments: that is the three-way handshake. From here on every segment has the <code>ACK</code> flag set.',
+      pkt: { from: 'C', flags: ['ACK'], seq: 1001, ack: 5001, len: 0 },
+      before: {}, after: { S: { state: 'ESTABLISHED', snd: 5001 } } },
+    { title: 'Data rides on a numbered byte stream',
+      text: 'The browser writes an HTTP request, 48 bytes. TCP puts it in a segment stamped <code>seq=1001</code>, so the payload occupies stream bytes 1001 to 1048. <code>PSH</code> asks the receiver to hand the data to the application right away instead of waiting to fill a buffer.',
+      pkt: { from: 'C', flags: ['PSH', 'ACK'], seq: 1001, ack: 5001, len: 48, data: REQ },
+      before: { C: { snd: 1049 } }, after: { S: { rcv: 1049 } } },
+    { title: 'The server confirms the request',
+      text: '<code>ack=1049</code>: all 48 bytes arrived and the next expected byte is 1049. This segment carries no data, so the server’s own sequence number does not move.',
+      pkt: { from: 'S', flags: ['ACK'], seq: 5001, ack: 1049, len: 0 },
+      before: {}, after: {} },
+    { title: 'A big response is cut into segments',
+      text: 'The web server hands TCP a 1200-byte response. The maximum segment size on this path is 400 bytes, so TCP splits the stream into three segments. Each carries the sequence number of its first byte: 5001, 5401 and 5801. This first one holds bytes 5001 to 5400.',
+      pkt: { from: 'S', flags: ['ACK'], seq: 5001, ack: 1049, len: 400, data: 'bytes 5001–5400 of the HTML response' },
+      before: { S: { snd: 5401 } }, after: { C: { rcv: 5401 }, buf: [2, 0, 0] } },
+    { title: 'The client acknowledges the first block',
+      text: '<code>ack=5401</code>. The client has a contiguous stream up to byte 5400 and has already passed it to the browser.',
+      pkt: { from: 'C', flags: ['ACK'], seq: 1049, ack: 5401, len: 0 },
+      before: {}, after: {} },
+    { title: 'A segment is dropped on the way',
+      text: 'Networks lose packets. A router queue overflows and the second segment, bytes 5401 to 5800, never arrives. Neither side knows yet. The server has already moved on and sends the third segment.',
+      pkt: { from: 'S', flags: ['ACK'], seq: 5401, ack: 1049, len: 400, data: 'bytes 5401–5800 of the HTML response' },
+      lost: true, before: { S: { snd: 5801 } }, after: {} },
+    { title: 'Out of order, but not thrown away',
+      text: 'Segment three, bytes 5801 to 6200, arrives before segment two. The client’s TCP can tell from the sequence number that 5401 to 5800 is missing. It keeps segment three in its buffer and does not deliver it to the browser yet, because the stream must be in order.',
+      pkt: { from: 'S', flags: ['ACK'], seq: 5801, ack: 1049, len: 400, data: 'bytes 5801–6200 of the HTML response' },
+      before: { S: { snd: 6201 } }, after: { buf: [2, 0, 1] } },
+    { title: 'The client repeats its last ACK',
+      text: 'It sends <code>ack=5401</code> again: still waiting for byte 5401. A duplicate ACK is a strong hint to the sender that something after 5401 arrived but 5401 itself did not.',
+      pkt: { from: 'C', flags: ['ACK'], seq: 1049, ack: 5401, len: 0 }, dup: true,
+      before: {}, after: {} },
+    { title: 'The sender retransmits the missing bytes',
+      text: 'After three duplicate ACKs, or a retransmission timer, the server resends <code>seq=5401</code>. The client now holds a contiguous stream 5001 to 6200, delivers all 1200 bytes to the browser in the right order, and the browser never learns that anything went wrong.',
+      pkt: { from: 'S', flags: ['ACK'], seq: 5401, ack: 1049, len: 400, data: 'bytes 5401–5800 of the HTML response (retransmitted)' },
+      retx: true, before: {}, after: { C: { rcv: 6201 }, buf: [2, 2, 2] } },
+    { title: 'One cumulative ACK covers all three segments',
+      text: '<code>ack=6201</code> acknowledges every byte up to 6200 in a single segment, including the third block that was buffered earlier. The server can now discard its copies of the response.',
+      pkt: { from: 'C', flags: ['ACK'], seq: 1049, ack: 6201, len: 0 },
+      before: {}, after: {} },
+    { title: 'FIN: the client has nothing more to send',
+      text: 'A <code>FIN</code> takes one sequence number, just like SYN, so <code>seq=1049</code> is the byte right after the request. The client moves to <code>FIN-WAIT-1</code>. It can still receive: closing is done one direction at a time.',
+      pkt: { from: 'C', flags: ['FIN', 'ACK'], seq: 1049, ack: 6201, len: 0 },
+      before: { C: { state: 'FIN-WAIT-1', snd: 1050 } }, after: { S: { state: 'CLOSE-WAIT', rcv: 1050 } } },
+    { title: 'The server acknowledges the FIN',
+      text: '<code>ack=1050</code>. The connection is half-closed: the server may still send data if it has any, and the client will acknowledge it.',
+      pkt: { from: 'S', flags: ['ACK'], seq: 6201, ack: 1050, len: 0 },
+      before: {}, after: { C: { state: 'FIN-WAIT-2' } } },
+    { title: 'FIN: the server closes its side',
+      text: 'The server application closes the socket, so its TCP sends its own <code>FIN</code> with <code>seq=6201</code>, the byte after the response.',
+      pkt: { from: 'S', flags: ['FIN', 'ACK'], seq: 6201, ack: 1050, len: 0 },
+      before: { S: { state: 'LAST-ACK', snd: 6202 } }, after: { C: { state: 'TIME-WAIT', rcv: 6202 } } },
+    { title: 'Final ACK: the connection is closed',
+      text: 'The client acknowledges 6202. The server closes at once. The client waits in <code>TIME-WAIT</code> for a while, in case this last ACK is lost and the FIN is resent, and then port 51724 is free for another connection. Port 80 keeps listening for the next client.',
+      pkt: { from: 'C', flags: ['ACK'], seq: 1050, ack: 6202, len: 0 },
+      before: {}, after: { S: { state: 'CLOSED' }, C: { state: 'CLOSED' } } }
+  ];
+
+  var INITIAL = { C: { state: 'CLOSED', snd: 1000, rcv: null }, S: { state: 'LISTEN', snd: 5000, rcv: null }, buf: [0, 0, 0] };
+
+  function clone(o) { return JSON.parse(JSON.stringify(o)); }
+  function apply(state, patch) {
+    if (!patch) return state;
+    ['C', 'S'].forEach(function (k) {
+      if (patch[k]) Object.keys(patch[k]).forEach(function (f) { state[k][f] = patch[k][f]; });
+    });
+    if (patch.buf) state.buf = patch.buf.slice();
+    return state;
+  }
+  function stateAt(i, arrived) {
+    var st = clone(INITIAL);
+    for (var k = 0; k < i; k++) { apply(st, STEPS[k].before); apply(st, STEPS[k].after); }
+    apply(st, STEPS[i].before);
+    if (arrived) apply(st, STEPS[i].after);
+    return st;
+  }
+
+  // DOM
+  var $ = function (id) { return document.getElementById(id); };
+  var pktLayer = $('pkt-layer'), dropLayer = $('drop-layer');
+  var reduced = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  var WIRE_Y = 231, X_LEFT = 254, X_RIGHT = 706, PKT_W = 176, PKT_H = 80;
+
+  function setText(id, v) { $(id).textContent = v; }
+
+  function renderHosts(st) {
+    ['C', 'S'].forEach(function (k) {
+      var h = st[k];
+      var badge = $('state-' + k);
+      badge.querySelector('text').textContent = h.state;
+      badge.classList.toggle('est', h.state === 'ESTABLISHED');
+      setText('snd-' + k, String(h.snd));
+      var rcv = $('rcv-' + k);
+      rcv.textContent = h.rcv === null ? '—' : String(h.rcv);
+      rcv.classList.toggle('dim', h.rcv === null);
+    });
+  }
+
+  function renderSockets(step, hit) {
+    var all = document.querySelectorAll('.sock');
+    for (var i = 0; i < all.length; i++) all[i].classList.remove('active', 'hit');
+    var actives = step.hl || ['C-0', 'S-0'];
+    actives.forEach(function (id) { $('sock-' + id).classList.add('active'); });
+    if (hit && step.demux) $('sock-' + step.demux).classList.add('hit');
+  }
+
+  function checksum(p) {
+    var v = (p.seq * 31 + (p.ack || 0) * 17 + p.len * 7 + p.flags.length * 977) % 65536;
+    return '0x' + ('0000' + v.toString(16)).slice(-4);
+  }
+
+  function renderHeader(step) {
+    var p = step.pkt, hdr = $('hdr');
+    hdr.classList.toggle('idle', !p);
+    var fs = ['f-sp', 'f-dp', 'f-seq', 'f-ack', 'f-flags', 'f-data'];
+    fs.forEach(function (id) { $(id).classList.remove('hot', 'from-c', 'from-s'); });
+    var bits = $('h-flags').children;
+    if (!p) {
+      setText('h-sp', '—'); setText('h-dp', '—'); setText('h-seq', '—'); setText('h-ack', '—');
+      setText('h-sum', '—'); setText('h-data', 'no segment on the wire');
+      for (var i = 0; i < bits.length; i++) bits[i].classList.remove('on');
+      $('hdr-caption').textContent = 'The 20-byte TCP header of the segment on the wire, 32 bits per row.';
+      return;
+    }
+    var from = HOST[p.from], to = HOST[p.from === 'C' ? 'S' : 'C'];
+    var cls = p.from === 'C' ? 'from-c' : 'from-s';
+    setText('h-sp', String(from.port)); setText('h-dp', String(to.port));
+    setText('h-seq', String(p.seq));
+    setText('h-ack', p.ack === null ? '0  (not valid: ACK flag is off)' : String(p.ack));
+    setText('h-sum', checksum(p));
+    setText('h-data', p.len === 0 ? 'none (0 bytes)' : p.len + ' bytes: ' + p.data);
+    for (var j = 0; j < bits.length; j++) bits[j].classList.toggle('on', p.flags.indexOf(bits[j].textContent) !== -1);
+    $('f-sp').classList.add(cls); $('f-dp').classList.add(cls);
+    var hot = step.hot || [];
+    hot.forEach(function (id) { $(id).classList.add('hot'); });
+    $('hdr-caption').textContent = from.name + ' → ' + to.name + ': ' + (p.len ? p.len + ' bytes of data' : 'header only') +
+      (p.retx ? '' : '') + '. Total on the wire: ' + (20 + p.len) + ' bytes of TCP inside an IP packet.';
+  }
+
+  function renderBuf(st) {
+    var labels = ['waiting', 'buffered, out of order', 'delivered to browser'];
+    for (var i = 0; i < 3; i++) {
+      var b = $('blk-' + i), v = st.buf[i];
+      b.classList.toggle('buffered', v === 1);
+      b.classList.toggle('done', v === 2);
+      b.querySelector('span').textContent = labels[v];
+    }
+    var note;
+    if (st.buf.join('') === '000') note = 'Nothing received yet. Receive-next for the client is ' + (st.C.rcv === null ? 'unset' : st.C.rcv) + '.';
+    else if (st.buf[1] === 0 && st.buf[2] === 1) note = 'Gap at 5401–5800. Block three is held back until the gap is filled, so the browser still sees only bytes up to 5400.';
+    else if (st.buf.join('') === '222') note = 'All 1200 bytes in order. Delivered to the browser as one continuous stream.';
+    else note = 'In-order bytes are handed to the browser as they arrive.';
+    $('buf-note').textContent = note;
+  }
+
+  function logLine(step, k) {
+    var p = step.pkt;
+    if (!p) return null;
+    var li = document.createElement('li');
+    li.className = p.from === 'C' ? 'c' : 's';
+    var who = document.createElement('span'); who.className = 'who'; who.textContent = p.from === 'C' ? 'C→S' : 'S→C';
+    var body = document.createElement('span');
+    var txt = p.flags.join('+') + ' seq=' + p.seq + (p.ack !== null ? ' ack=' + p.ack : '') + (p.len ? ' len=' + p.len : '');
+    body.textContent = txt + ' ';
+    if (step.lost) { var n = document.createElement('span'); n.className = 'note'; n.textContent = 'LOST'; body.appendChild(n); }
+    if (step.dup) { var d = document.createElement('span'); d.className = 'note'; d.textContent = 'dup ack'; body.appendChild(d); }
+    if (step.retx) { var r = document.createElement('span'); r.className = 'note ok'; r.textContent = 'retransmit'; body.appendChild(r); }
+    li.appendChild(who); li.appendChild(body);
+    li.setAttribute('data-k', String(k));
+    return li;
+  }
+
+  function renderLog(i) {
+    var log = $('log'); log.innerHTML = '';
+    var last = null;
+    for (var k = 0; k <= i; k++) { var li = logLine(STEPS[k], k); if (li) { log.appendChild(li); last = li; } }
+    if (last) { last.classList.add('now'); last.scrollIntoView({ block: 'nearest' }); }
+  }
+
+  function renderNarration(i) {
+    setText('step-num', 'Step ' + (i + 1) + ' of ' + STEPS.length);
+    setText('step-title', STEPS[i].title);
+    $('step-text').innerHTML = STEPS[i].text;
+    $('progress-bar').style.width = ((i + 1) / STEPS.length * 100) + '%';
+    var chips = $('phase-chips').children;
+    var cur = 0;
+    for (var p = 0; p < PHASES.length; p++) if (i >= PHASES[p].at) cur = p;
+    for (var c = 0; c < chips.length; c++) chips[c].setAttribute('aria-current', c === cur ? 'true' : 'false');
+    $('btn-prev').disabled = i === 0;
+    $('btn-next').disabled = i === STEPS.length - 1;
+  }
+
+  // Packet drawing
+  function makePkt(step) {
+    var p = step.pkt;
+    var from = HOST[p.from], to = HOST[p.from === 'C' ? 'S' : 'C'];
+    var g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+    g.setAttribute('class', 'pkt ' + (p.from === 'C' ? 'c' : 's'));
+    var flagsTxt = p.flags.join(' + ');
+    var tag = step.retx ? '<text class="tag retx" x="' + (PKT_W - 10) + '" y="16" text-anchor="end">RETRANSMIT</text>'
+            : step.dup ? '<text class="tag dup" x="' + (PKT_W - 10) + '" y="16" text-anchor="end">DUPLICATE</text>' : '';
+    g.innerHTML =
+      '<rect class="body" x="0" y="0" width="' + PKT_W + '" height="' + PKT_H + '" rx="6"/>' +
+      '<text class="flags" x="10" y="18">' + flagsTxt + '</text>' + tag +
+      '<text x="10" y="36">' + from.port + ' → ' + to.port + '</text>' +
+      '<text x="10" y="52">seq ' + p.seq + (p.ack !== null ? '  ack ' + p.ack : '') + '</text>' +
+      '<text x="10" y="70" font-size="11">' + (p.len ? 'data ' + p.len + ' B' : 'no data') + '</text>';
+    return g;
+  }
+  function place(g, x) { g.setAttribute('transform', 'translate(' + x + ',' + (WIRE_Y - PKT_H / 2) + ')'); }
+
+  // Engine
+  var idx = 0, playing = false, raf = 0, timer = 0, speed = 1;
+  function dur(ms) { return reduced ? 0 : ms / speed; }
+  function clearAnim() { if (raf) cancelAnimationFrame(raf); raf = 0; if (timer) clearTimeout(timer); timer = 0; pktLayer.innerHTML = ''; dropLayer.innerHTML = ''; }
+  function ease(t) { return t < 0.5 ? 2 * t * t : -1 + (4 - 2 * t) * t; }
+
+  function showDrop(x) {
+    var cx = x + PKT_W / 2, cy = WIRE_Y;
+    dropLayer.innerHTML =
+      '<path class="drop" d="M' + (cx - 16) + ' ' + (cy - 16) + ' L' + (cx + 16) + ' ' + (cy + 16) + ' M' + (cx + 16) + ' ' + (cy - 16) + ' L' + (cx - 16) + ' ' + (cy + 16) + '"/>' +
+      '<text class="drop-lbl" x="' + cx + '" y="' + (cy + 40) + '" text-anchor="middle">dropped in the network</text>';
+  }
+
+  function goTo(i, opts) {
+    opts = opts || {};
+    clearAnim();
+    idx = Math.max(0, Math.min(STEPS.length - 1, i));
+    var step = STEPS[idx];
+    var before = stateAt(idx, false);
+    renderHosts(before); renderSockets(step, false); renderHeader(step); renderBuf(before); renderLog(idx); renderNarration(idx);
+
+    var finish = function () {
+      var after = stateAt(idx, true);
+      renderHosts(after); renderSockets(step, true); renderBuf(after);
+      if (playing) {
+        if (idx === STEPS.length - 1) { setPlaying(false); return; }
+        timer = setTimeout(function () { goTo(idx + 1); }, dur(step.pkt ? 1800 : 3200) + (reduced ? 2200 : 0));
+      }
+    };
+
+    if (!step.pkt) { finish(); return; }
+
+    var g = makePkt(step);
+    var fromC = step.pkt.from === 'C';
+    var x0 = fromC ? X_LEFT : X_RIGHT - PKT_W;
+    var x1 = fromC ? X_RIGHT - PKT_W : X_LEFT;
+    var xEnd = step.lost ? (x0 + x1) / 2 : x1;
+    place(g, x0); pktLayer.appendChild(g);
+    var D = dur(1500), t0 = performance.now();
+    if (D === 0) {
+      place(g, xEnd);
+      if (step.lost) { g.style.opacity = '0.25'; showDrop(xEnd); }
+      finish(); return;
+    }
+    function frame(now) {
+      var t = Math.min(1, (now - t0) / D);
+      place(g, x0 + (xEnd - x0) * ease(t));
+      if (t < 1) { raf = requestAnimationFrame(frame); return; }
+      raf = 0;
+      if (step.lost) {
+        showDrop(xEnd);
+        var f0 = performance.now(), F = dur(500);
+        (function fade(n) {
+          var u = Math.min(1, (n - f0) / F);
+          g.style.opacity = String(1 - 0.75 * u);
+          if (u < 1) { raf = requestAnimationFrame(fade); return; }
+          raf = 0; finish();
+        })(f0);
+      } else {
+        finish();
+      }
+    }
+    raf = requestAnimationFrame(frame);
+  }
+
+  function setPlaying(v) {
+    playing = v;
+    $('btn-play').textContent = v ? 'Pause' : (idx === STEPS.length - 1 ? 'Replay' : 'Play');
+  }
+
+  $('btn-play').addEventListener('click', function () {
+    if (playing) { setPlaying(false); if (timer) { clearTimeout(timer); timer = 0; } return; }
+    if (idx === STEPS.length - 1) { setPlaying(true); goTo(0); return; }
+    setPlaying(true); goTo(idx);
+  });
+  $('btn-next').addEventListener('click', function () { setPlaying(false); goTo(idx + 1); });
+  $('btn-prev').addEventListener('click', function () { setPlaying(false); goTo(idx - 1); });
+  $('btn-restart').addEventListener('click', function () { setPlaying(false); goTo(0); });
+  $('speed').addEventListener('change', function (e) { speed = parseFloat(e.target.value) || 1; });
+  document.addEventListener('keydown', function (e) {
+    if (e.target && /select|input|textarea/i.test(e.target.tagName)) return;
+    if (e.key === 'ArrowRight') { e.preventDefault(); setPlaying(false); goTo(idx + 1); }
+    else if (e.key === 'ArrowLeft') { e.preventDefault(); setPlaying(false); goTo(idx - 1); }
+    else if (e.key === ' ') { e.preventDefault(); $('btn-play').click(); }
+  });
+
+  PHASES.forEach(function (ph, n) {
+    var b = document.createElement('button');
+    b.type = 'button'; b.className = 'chip'; b.textContent = ph.name;
+    b.addEventListener('click', function () { setPlaying(false); goTo(ph.at); });
+    $('phase-chips').appendChild(b);
+  });
+
+  goTo(0);
+})();
+</script>
+</body>
+</html>
