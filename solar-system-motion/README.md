@@ -20,8 +20,8 @@ A speed ladder beside the narration lists every motion Earth is taking part
 in at once, from rotation (0.46 km/s) to the Local Group's drift (~620 km/s).
 
 Open `index.html` in any browser with WebGL. No build step. It loads
-Three.js r128 and its OrbitControls from cdnjs, plus a Google Fonts
-stylesheet (with system fallbacks). Planet surfaces, the Sun's granulation,
+Three.js r128 from cdnjs (falling back to jsdelivr) and inlines Three's
+OrbitControls (MIT), plus a Google Fonts stylesheet with system fallbacks. Planet surfaces, the Sun's granulation,
 atmospheres, Saturn's rings, the star field and the galaxies are all
 generated procedurally at load time; no image assets are used.
 
